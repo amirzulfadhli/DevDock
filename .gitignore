@@ -1,0 +1,13 @@
+# Python virtual environment
+.venv/
+
+# Python cache
+__pychache__/
+*.pyc
+
+# Temporary files
+*.tmp
+*.log
+
+# Generated test exports
+devdock-logs.txt
