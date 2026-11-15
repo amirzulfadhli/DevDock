@@ -11,3 +11,7 @@ __pychache__/
 
 # Generated test exports
 devdock-logs.txt
+
+#Exported telemetry
+devdock-telemetry.csv
+
