@@ -411,39 +411,57 @@ serialConnection = None
 readBuffer = bytearray()
 serialReadTimer = QTimer()
 
+def disconnectSerial(status = "Status: Disconnected"):
+    global serialConnection
+
+    serialReadTimer.stop()
+
+    try:
+        if serialConnection is not None:
+            serialConnection.close()
+
+    except (serial.SerialException, OSError) as error:
+        serialMonitor.append(f"[ERROR] Close Failed: {error}")
+
+    finally:
+        serialConnection = None
+        readBuffer.clear()
+
+        connectButton.setText("Connect")
+        statusLabel.setText(status)
+
+        portSelector.setEnabled(True)
+        baudSelector.setEnabled(True)
+        refreshButton.setEnabled(True)
+        simulationButton.setEnabled(True)
+        sendButton.setEnabled(True)
+
 def readSerialData():
-    if serialConnection is None or not serialConnection.is_open:
+    if serialConnection is None:
+        return
+    
+    if not serialConnection.is_open:
+        disconnectSerial("Status: Connection Lost")
         return
     
     try:
         messages = readAvailableLines(serialConnection, readBuffer)
 
-        for message in messages:
-            handleTelemetry(message)
-
     except (serial.SerialException, OSError) as error:
-        serialReadTimer.stop()
-        statusLabel.setText("Status: Read Error")
         serialMonitor.append(f"[ERROR] {error}")
+        disconnectSerial("Status: Read Error")
+        return
+    
+    for message  in messages:
+        handleTelemetry(message)
     
 serialReadTimer.timeout.connect(readSerialData)
 
 def toggleConnection():
     global serialConnection
 
-    if serialConnection is not None and serialConnection.is_open:
-        serialReadTimer.stop()
-        serialConnection.close()
-        serialConnection = None
-        readBuffer.clear()
-
-        connectButton.setText("Connect")
-        statusLabel.setText("Status: Disconnected")
-        portSelector.setEnabled(True)
-        baudSelector.setEnabled(True)
-        refreshButton.setEnabled(True)
-        simulationButton.setEnabled(True)
-        sendButton.setEnabled(False)
+    if serialConnection is not None:
+        disconnectSerial()
         return
     
     try:
@@ -452,9 +470,9 @@ def toggleConnection():
            int(baudSelector.currentText())
         )
     
-    except (Ssrial.SerialException, OSError, ValueError) as error:
+    except (serial.SerialException, OSError, ValueError) as error:
         serialConnection = None
-        status.Label.setText("Status: Connection Failed")
+        statusLabel.setText("Status: Connection Failed")
         serialMonitor.append(f"[ERROR] {error}")
         return
     
@@ -492,6 +510,7 @@ def sendCommand():
 
     except (serial.SerialException, OSError) as error:
         serialMonitor.append(f"[ERROR] Send failed: {error}")
+        disconnectSerial("Status: Write Error")
 
 sendButton.clicked.connect(sendCommand)
 commandInput.returnPressed.connect(sendCommand)

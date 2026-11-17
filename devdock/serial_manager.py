@@ -17,6 +17,7 @@ def readAvailableLines(connection, buffer):
     while b"\n" in buffer:
         line, _, remaining = buffer.partition(b"\n")
         buffer[:] = remaining
+
         message = line.decode("utf-8", errors = "replace").strip()
 
         if message:
