@@ -5,14 +5,13 @@ import serial
 import time
 import csv
 import pyqtgraph as pg
-from PySide6.QtWidgets import QApplication, QMainWindow, QLabel, QComboBox, QPushButton, QWidget, QVBoxLayout, QTextEdit, QHBoxLayout, QLineEdit, QFileDialog, QMessageBox
-from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication, QMainWindow, QLabel, QComboBox, QPushButton, QWidget, QVBoxLayout, QTextEdit, QHBoxLayout, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QMenu
+from PySide6.QtCore import Qt, QTimer, QPoint
 from datetime import datetime
 from serial.tools import list_ports
 
 from devdock.simulator import generateSampleMessage
-from devdock.telemetry import classifyNonJson, parseJson, processMessage
-from devdock.serial_manager import openSerialConnection
+from devdock.telemetry import classifyNonJson, parseJson, processMessage, extractNumericFields, updateSensorHistories
 from devdock.serial_manager import openSerialConnection, readAvailableLines, sendSerialLine, getAvailablePorts
 
 app = QApplication(sys.argv)
@@ -36,6 +35,7 @@ resetGraphsButton = QPushButton("Reset Graphs")
 pauseGraphsButton = QPushButton("Pause Graphs")
 exportCsvButton = QPushButton("Export csv")
 clearRecordsButton = QPushButton("Clear csv DATA")
+sensorManagerButton = QPushButton("Sensor Manager")
 
 graphsPaused = False
 
@@ -139,7 +139,14 @@ def resetGraphs():
     temperatureLabel.setText("Temperature: --  °C")
     humidityLabel.setText("Humidity: -- %")
 
+    sensorHistories.clear()
+
+    for graphInfo in dynamicGraphs.values():
+        graphInfo["curve"].setData([], [])
+        
 resetGraphsButton.clicked.connect(resetGraphs)
+
+sensorHistories = {}
 
 def handleTelemetry(rawData):
     global sampleIndex
@@ -156,6 +163,34 @@ def handleTelemetry(rawData):
         currentSample = round(time.monotonic() - sessionStart, 2)
         temperature = parseData.get("temperature")
 
+        numericFields = extractNumericFields(parseData)
+        
+        updateSensorHistories(
+            sensorHistories,
+            numericFields,
+            currentSample
+        )
+
+        for sensorName in numericFields:
+            if sensorName in ("temperature", "humidity"):
+                continue
+
+            if sensorName not in dynamicGraphs:
+                graph = createSensorGraph(sensorName)
+                dynamicGraphLayout.addWidget(graph)
+
+        if not graphsPaused:
+            for sensorName, graphInfo in dynamicGraphs.items():
+                history = sensorHistories.get(sensorName)
+
+                if history and history["values"]:
+                    graphInfo["curve"].setData(
+                        history["times"],
+                        history["values"]
+                    )
+
+        print("Dynamic sensors:", list(sensorHistories.keys()))
+
         if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
             temperatureHistory.append(temperature)
             temperatureSamples.append(currentSample)
@@ -166,7 +201,7 @@ def handleTelemetry(rawData):
             
             temperatureLabel.setText(f"Temperature: {temperature:.1f} °C")
         
-        if not graphsPaused:
+        if not graphsPaused and temperatureHistory:
             temperatureCurve.setData(temperatureSamples, temperatureHistory)
 
             minTemp = min(temperatureHistory) - 2
@@ -185,9 +220,9 @@ def handleTelemetry(rawData):
 
             humidityLabel.setText(f"Humidity: {humidity:.1f} %")
 
-            if not graphsPaused:
+            if not graphsPaused and humidityHistory:
                 humidityCurve.setData(humiditySamples, humidityHistory)
-            
+
         if any(key in parseData for key in ("temperature", "humidity")):
             telemetryRecords.append({
                 "timestamp": timestamp,
@@ -197,7 +232,6 @@ def handleTelemetry(rawData):
                 "humidity": humidity if isinstance(humidity, (int, float)) and not
             isinstance(humidity, bool) else ""
             })
-            print(telemetryRecords[-1])
     
     messageCounts["total"] += 1
     messageCounts[messageType] += 1
@@ -216,6 +250,7 @@ def handleTelemetry(rawData):
 
     if atBottom:
         scrollBar.setValue(scrollBar.maximum())
+
 
 def generateTelemetry():
     handleTelemetry(generateSampleMessage())
@@ -350,6 +385,61 @@ humidityGraph.setYRange(0, 100, padding = 0)
 humidityHistory = []
 humidityCurve = humidityGraph.plot()
 
+dynamicGraphs = {}
+
+def createSensorGraph(sensorName):
+    graph = pg.PlotWidget()
+    graph.setMinimumHeight(200)
+
+    graph.setTitle(f"{sensorName.replace('_', ' ').title()} Telemetry")
+    graph.setLabel("left", sensorName.replace("_", " ").title())
+    graph.setLabel("bottom", "Elapsed Time", units = "s")
+
+    graph.showGrid(x = True, y = True)
+
+    plotMenu = graph.getPlotItem().getViewBox().getMenu(None)
+
+    hideAction = plotMenu.addAction("Hide Graph")
+    hideAction.triggered.connect(graph.hide)
+
+    curve = graph.plot()
+
+    dynamicGraphs[sensorName] = {
+        "graph": graph,
+        "curve": curve
+    }
+
+    return graph
+
+def showSensorManager():
+    menu = QMenu(window)
+
+    if not dynamicGraphs:
+        action = menu.addAction("No dynamic sensors detected")
+        action.setEnabled(False)
+
+    for sensorName, graphInfo in dynamicGraphs.items():
+        graph = graphInfo["graph"]
+
+        action = menu.addAction(
+            sensorName.replace("_", " ").title()
+        )
+
+        action.setCheckable(True)
+        action.setChecked(graph.isVisible())
+
+        action.triggered.connect(
+            lambda checked, g = graph: g.setVisible(checked)
+        )
+
+    menu.exec(
+        sensorManagerButton.mapToGlobal(
+            QPoint(0, sensorManagerButton.height())
+        )
+    )
+
+sensorManagerButton.clicked.connect(showSensorManager)
+
 telemetryRecords = []
 
 connectionLayout = QHBoxLayout()
@@ -371,6 +461,7 @@ actionLayout.addWidget(resetGraphsButton)
 actionLayout.addWidget(pauseGraphsButton)
 actionLayout.addWidget(exportCsvButton)
 actionLayout.addWidget(clearRecordsButton)
+actionLayout.addWidget(sensorManagerButton)
 actionLayout.addStretch()
 
 commandLayout = QHBoxLayout()
@@ -383,24 +474,36 @@ layout.addLayout(actionLayout)
 layout.addWidget(statusLabel)
 layout.addWidget(statsLabel)
 layout.addLayout(commandLayout)
-layout.addWidget(serialMonitor, 2)
+layout.addWidget(serialMonitor, 1)
 
-temperatureLayout = QVBoxLayout()
+dynamicGraphLayout = QVBoxLayout()
 
-temperatureLayout.addWidget(temperatureLabel)
-temperatureLayout.addWidget(temperatureGraph)
+graphScrollArea = QScrollArea()
+graphScrollArea.setWidgetResizable(True)
 
-humidityLayout = QVBoxLayout()
-
-humidityLayout.addWidget(humidityLabel)
-humidityLayout.addWidget(humidityGraph)
+graphContainer = QWidget()
+graphContainerLayout = QVBoxLayout()
 
 graphLayout = QHBoxLayout()
-
 graphLayout.addWidget(temperatureGraph)
 graphLayout.addWidget(humidityGraph)
 
+temperatureGraph.setMinimumHeight(200)
+humidityGraph.setMinimumHeight(200)
+
+dynamicGraphLayout = QVBoxLayout()
+
+graphContainerLayout.addLayout(graphLayout)
+graphContainerLayout.addLayout(dynamicGraphLayout)
+
+graphContainer.setLayout(graphContainerLayout)
+
+graphScrollArea.setWidget(graphContainer)
+
+layout.addWidget(graphScrollArea, 3)
+
 layout.addLayout(graphLayout, 1)
+layout.addLayout(dynamicGraphLayout, 1)
 
 container.setLayout(layout)
 window.setCentralWidget(container)
