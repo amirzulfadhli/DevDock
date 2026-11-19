@@ -5,11 +5,12 @@ import serial
 import time
 import csv
 import pyqtgraph as pg
-from PySide6.QtWidgets import QApplication, QMainWindow, QLabel, QComboBox, QPushButton, QWidget, QVBoxLayout, QTextEdit, QHBoxLayout, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QMenu
+from PySide6.QtWidgets import QApplication, QMainWindow, QLabel, QComboBox, QPushButton, QWidget, QVBoxLayout, QTextEdit, QHBoxLayout, QGridLayout, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QMenu, QInputDialog, QProgressBar
 from PySide6.QtCore import Qt, QTimer, QPoint
 from datetime import datetime
 from serial.tools import list_ports
 
+from devdock.dashboard import buildGraph, buildNumericCard, buildGauge
 from devdock.simulator import generateSampleMessage
 from devdock.telemetry import classifyNonJson, parseJson, processMessage, extractNumericFields, updateSensorHistories
 from devdock.serial_manager import openSerialConnection, readAvailableLines, sendSerialLine, getAvailablePorts
@@ -31,11 +32,12 @@ refreshButton = QPushButton("Refresh Ports")
 simulationButton = QPushButton("Start Simulation")
 exportButton = QPushButton("Export Logs")
 resetStatsButton = QPushButton("Reset Statistics")
-resetGraphsButton = QPushButton("Reset Graphs")
+resetGraphsButton = QPushButton("Reset Dashboard")
 pauseGraphsButton = QPushButton("Pause Graphs")
 exportCsvButton = QPushButton("Export csv")
 clearRecordsButton = QPushButton("Clear csv DATA")
 sensorManagerButton = QPushButton("Sensor Manager")
+addWidgetButton = QPushButton("+ AddWidget")
 
 graphsPaused = False
 
@@ -125,9 +127,10 @@ resetStatsButton.clicked.connect(resetStatistics)
 
 def resetGraphs():
     global sessiontStart
-    sessionStart = None
 
+    sessionStart = None
     sampleIndex = 0
+
     temperatureSamples.clear()
     humiditySamples.clear()
     temperatureHistory.clear()
@@ -143,6 +146,8 @@ def resetGraphs():
 
     for graphInfo in dynamicGraphs.values():
         graphInfo["curve"].setData([], [])
+    
+    resetDashboardValues()
         
 resetGraphsButton.clicked.connect(resetGraphs)
 
@@ -164,6 +169,15 @@ def handleTelemetry(rawData):
         temperature = parseData.get("temperature")
 
         numericFields = extractNumericFields(parseData)
+
+        for sensorName, value in numericFields.items():
+            updateGauge(sensorName, value)
+        
+        for sensorName, value in numericFields.items():
+            if sensorName in numericCards:
+                numericCards[sensorName]["valueLabel"].setText(
+                    f"{value:.2f}"
+                )
         
         updateSensorHistories(
             sensorHistories,
@@ -176,8 +190,7 @@ def handleTelemetry(rawData):
                 continue
 
             if sensorName not in dynamicGraphs:
-                graph = createSensorGraph(sensorName)
-                dynamicGraphLayout.addWidget(graph)
+                continue
 
         if not graphsPaused:
             for sensorName, graphInfo in dynamicGraphs.items():
@@ -386,30 +399,164 @@ humidityHistory = []
 humidityCurve = humidityGraph.plot()
 
 dynamicGraphs = {}
+numericCards = {}
+gaugeWidgets = {}
 
 def createSensorGraph(sensorName):
-    graph = pg.PlotWidget()
-    graph.setMinimumHeight(200)
-
-    graph.setTitle(f"{sensorName.replace('_', ' ').title()} Telemetry")
-    graph.setLabel("left", sensorName.replace("_", " ").title())
-    graph.setLabel("bottom", "Elapsed Time", units = "s")
-
-    graph.showGrid(x = True, y = True)
+    graph, curve = buildGraph(sensorName)
 
     plotMenu = graph.getPlotItem().getViewBox().getMenu(None)
 
     hideAction = plotMenu.addAction("Hide Graph")
     hideAction.triggered.connect(graph.hide)
 
-    curve = graph.plot()
-
     dynamicGraphs[sensorName] = {
         "graph": graph,
         "curve": curve
     }
 
+    menu = graph.getPlotItem().getViewBox().getMenu(None)
+
+    removeAction = menu.addAction("RemoveGraph")
+    removeAction.triggered.connect(lambda: removeLineGraph(sensorName))
+
     return graph
+
+def removeLineGraph(sensorName):
+    if sensorName not in dynamicGraphs:
+        return
+
+    graphInfo = dynamicGraphs.pop(sensorName)
+    graph = graphInfo["graph"]
+
+    dynamicGraphLayout.removeWidget(graph)
+    graph.hide()
+    graph.deleteLater()
+
+def createNumericCard(sensorName):
+    card, valueLabel = buildNumericCard(sensorName)
+
+    card.setContextMenuPolicy(
+        Qt.ContextMenuPolicy.CustomContextMenu
+    )
+
+    def showCardMenu(position):
+        menu = QMenu(card)
+
+        removeAction = menu.addAction("Remove Card")
+
+        selectedAction = menu.exec(
+            card.mapToGlobal(position)
+        )
+
+        if selectedAction == removeAction:
+            removeNumericCard(sensorName)
+        
+    card.customContextMenuRequested.connect(showCardMenu)
+
+    index = len(numericCards)
+
+    row = index // 3
+    column = index % 3
+
+    numericCardLayout.addWidget(card, row, column)
+
+    numericCards[sensorName] = {
+        "card": card,
+        "valueLabel": valueLabel
+    }
+
+def createGauge(sensorName):
+    card, valueLabel, gauge = buildGauge(sensorName)
+
+    card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def showGaugeMenu(position):
+        menu = QMenu(card)
+
+        removeAction = menu.addAction("Remove Gauge")
+
+        selectedAction = menu.exec(card.mapToGlobal(position))
+
+        if selectedAction == removeAction:
+            removeGauge(sensorName)
+        
+    card.customContextMenuRequested.connect(showGaugeMenu)
+
+    index = len(gaugeWidgets)
+
+    row = index // 3
+    column = index % 3
+
+    gaugeLayout.addWidget(card, row, column)
+
+    gaugeWidgets[sensorName] ={
+        "card": card,
+        "valueLabel": valueLabel,
+        "gauge": gauge
+    }
+
+def removeGauge(sensorName):
+    if sensorName not in gaugeWidgets:
+        return
+    
+    gaugeInfo = gaugeWidgets.pop(sensorName)
+    card = gaugeInfo["card"]
+
+    gaugeLayout.removeWidget(card)
+    card.hide()
+    card.deleteLater()
+
+    for index, gaugeInfo in enumerate(gaugeWidgets.values()):
+        row = index // 3
+        column = index % 3
+
+        gaugeLayout.addWidget(gaugeInfo["card"], row, column)
+
+def updateGauge(sensorName, value):
+    if sensorName not in gaugeWidgets:
+        return
+
+    gaugeInfo = gaugeWidgets[sensorName]
+    gaugeInfo["valueLabel"].setText(f"{value:.2f}")
+
+    gauge = gaugeInfo["gauge"]
+
+    gaugeValue = max(gauge.minimum(), min(gauge.maximum(), int(value)))
+
+    gauge.setValue(gaugeValue)
+
+def resetDashboardValues():
+    print("Resetting dashboard values")
+
+    for cardInfo in numericCards.values():
+        cardInfo["valueLabel"].setText("--")
+
+    for gaugeInfo in gaugeWidgets.values():
+        gaugeInfo["valueLabel"].setText("--")
+
+        gauge = gaugeInfo["gauge"]
+        gauge.reset()
+    
+resetDashboardValues()
+
+def removeNumericCard(sensorName):
+    if sensorName not in numericCards:
+        return
+    
+    cardInfo = numericCards.pop(sensorName)
+    card = cardInfo["card"]
+
+    numericCardLayout.removeWidget(card)
+    card.deleteLater()
+
+    for index, cardInfo in enumerate(numericCards.values()):
+        row = index // 3
+        column = index % 3
+
+        numericCardLayout.addWidget(
+            cardInfo["card"], row, column
+        )
 
 def showSensorManager():
     menu = QMenu(window)
@@ -440,6 +587,133 @@ def showSensorManager():
 
 sensorManagerButton.clicked.connect(showSensorManager)
 
+def addNumericCard():
+    availableSensors = [
+        sensorName
+        for sensorName in sensorHistories
+        if sensorName not in numericCards
+    ]
+
+    if not availableSensors:
+        QMessageBox.information(
+            window,
+            "Add Numeric Card",
+            "No available sensors detected"
+        )
+        return
+
+    sensorName, accepted = QInputDialog.getItem(
+        window,
+        "Add Numeric Card",
+        "Select a sensor:",
+        availableSensors,
+        0,
+        False
+    )
+
+    if accepted and sensorName:
+        createNumericCard(sensorName)
+
+        history = sensorHistories[sensorName]
+
+        if history["values"]:
+            value = history["values"][-1]
+
+            numericCards[sensorName]["valueLabel"].setText(
+                f"{value:.2f}"
+            )
+
+def addLineGraph():
+    availableSensors = [
+        sensorName
+        for sensorName in sensorHistories
+        if sensorName not in dynamicGraphs
+        and sensorName not in ["temperature", "humidity"]
+    ]
+
+    if not availableSensors:
+        QMessageBox.information(
+            window,
+            "Add Line Graph",
+            "No available sensors detected"
+        )
+        return
+
+    sensorName, accepted = QInputDialog.getItem(
+        window,
+        "Add Line Graph",
+        "Select a sensor:",
+        availableSensors,
+        0,
+        False
+    )
+
+    if accepted and sensorName:
+        graph = createSensorGraph(sensorName)
+        dynamicGraphLayout.addWidget(graph)
+
+        history = sensorHistories[sensorName]
+
+        dynamicGraphs[sensorName]["curve"].setData(
+            history["times"],
+            history["values"]
+        )
+
+def addGauge():
+    availableSensors = [
+        sensorName
+        for sensorName in sensorHistories
+        if sensorName not in gaugeWidgets
+    ]
+
+    if not availableSensors:
+        QMessageBox.information(
+            window,
+            "Add Gauge",
+            "No avaialable sensors detected"
+        )
+        return
+
+    sensorName, accepted = QInputDialog.getItem(
+        window,
+        "Add Gauge",
+        "Select a sensor:",
+        availableSensors,
+        0,
+        False
+    )
+
+    if accepted and sensorName:
+        createGauge(sensorName)
+
+        history = sensorHistories[sensorName]
+
+        if history["values"]:
+            updateGauge(sensorName, history["values"][-1])
+
+def showAddWidgetMenu():
+    menu = QMenu(window)
+
+    graphAction = menu.addAction("Line Graph")
+    graphAction.triggered.connect(addLineGraph)
+
+    numericAction = menu.addAction("Numeric Card")
+    numericAction.triggered.connect(addNumericCard)
+
+    gaugeAction = menu.addAction("Gauge")
+    gaugeAction.triggered.connect(addGauge)
+
+
+    menu.addAction("Control Button")
+
+    menu.exec(
+        addWidgetButton.mapToGlobal(
+            QPoint(0, addWidgetButton.height())
+        )
+    )
+
+addWidgetButton.clicked.connect(showAddWidgetMenu)
+
 telemetryRecords = []
 
 connectionLayout = QHBoxLayout()
@@ -462,6 +736,7 @@ actionLayout.addWidget(pauseGraphsButton)
 actionLayout.addWidget(exportCsvButton)
 actionLayout.addWidget(clearRecordsButton)
 actionLayout.addWidget(sensorManagerButton)
+actionLayout.addWidget(addWidgetButton)
 actionLayout.addStretch()
 
 commandLayout = QHBoxLayout()
@@ -475,8 +750,6 @@ layout.addWidget(statusLabel)
 layout.addWidget(statsLabel)
 layout.addLayout(commandLayout)
 layout.addWidget(serialMonitor, 1)
-
-dynamicGraphLayout = QVBoxLayout()
 
 graphScrollArea = QScrollArea()
 graphScrollArea.setWidgetResizable(True)
@@ -492,18 +765,19 @@ temperatureGraph.setMinimumHeight(200)
 humidityGraph.setMinimumHeight(200)
 
 dynamicGraphLayout = QVBoxLayout()
+numericCardLayout = QGridLayout()
+gaugeLayout = QGridLayout()
 
 graphContainerLayout.addLayout(graphLayout)
 graphContainerLayout.addLayout(dynamicGraphLayout)
+graphContainerLayout.addLayout(numericCardLayout)
+graphContainerLayout.addLayout(gaugeLayout)
 
 graphContainer.setLayout(graphContainerLayout)
 
 graphScrollArea.setWidget(graphContainer)
 
 layout.addWidget(graphScrollArea, 3)
-
-layout.addLayout(graphLayout, 1)
-layout.addLayout(dynamicGraphLayout, 1)
 
 container.setLayout(layout)
 window.setCentralWidget(container)
