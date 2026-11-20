@@ -58,7 +58,7 @@ def buildGauge(sensorName, minimum = 0, maximum = 100):
         QFrame {
             background-color: #20242b;
             border: 1px solid #414750;
-            vorder-radius: 8px;
+            border-radius: 8px;
         }
         QLabel {
             color: white;

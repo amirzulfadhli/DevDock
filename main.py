@@ -14,6 +14,9 @@ from devdock.dashboard import buildGraph, buildNumericCard, buildGauge
 from devdock.simulator import generateSampleMessage
 from devdock.telemetry import classifyNonJson, parseJson, processMessage, extractNumericFields, updateSensorHistories
 from devdock.serial_manager import openSerialConnection, readAvailableLines, sendSerialLine, getAvailablePorts
+from devdock.workspace import DashboardWorkspace
+from devdock.widget_container import DashboardWidget
+from devdock.configuration import saveConfiguration, loadConfiguration
 
 app = QApplication(sys.argv)
 
@@ -32,12 +35,16 @@ refreshButton = QPushButton("Refresh Ports")
 simulationButton = QPushButton("Start Simulation")
 exportButton = QPushButton("Export Logs")
 resetStatsButton = QPushButton("Reset Statistics")
-resetGraphsButton = QPushButton("Reset Dashboard")
+resetGraphsButton = QPushButton("Reset Data")
 pauseGraphsButton = QPushButton("Pause Graphs")
 exportCsvButton = QPushButton("Export csv")
 clearRecordsButton = QPushButton("Clear csv DATA")
 sensorManagerButton = QPushButton("Sensor Manager")
 addWidgetButton = QPushButton("+ AddWidget")
+editLayoutButton = QPushButton("Lock Layout")
+saveLayoutButton = QPushButton("Save Layout")
+loadLayoutButton = QPushButton("Load Layout")
+resetLayoutButton = QPushButton("Reset Layout")
 
 graphsPaused = False
 
@@ -408,7 +415,9 @@ def createSensorGraph(sensorName):
     plotMenu = graph.getPlotItem().getViewBox().getMenu(None)
 
     hideAction = plotMenu.addAction("Hide Graph")
-    hideAction.triggered.connect(graph.hide)
+    hideAction.triggered.connect(
+        lambda: hideSensorGraph(sensorName)
+    )
 
     dynamicGraphs[sensorName] = {
         "graph": graph,
@@ -422,16 +431,26 @@ def createSensorGraph(sensorName):
 
     return graph
 
+def hideSensorGraph(sensorName):
+    if not dashboardWorkspace.editMode:
+        return
+
+    widgetInfo = dashboardWorkspace.getWidget(
+        f"graph:{sensorName}"
+    )
+
+    if widgetInfo is not None:
+        widgetInfo["widget"].hide()
+
 def removeLineGraph(sensorName):
     if sensorName not in dynamicGraphs:
         return
 
-    graphInfo = dynamicGraphs.pop(sensorName)
-    graph = graphInfo["graph"]
+    dynamicGraphs.pop(sensorName)
 
-    dynamicGraphLayout.removeWidget(graph)
-    graph.hide()
-    graph.deleteLater()
+    widgetId = f"graph:{sensorName}"
+
+    dashboardWorkspace.unregisterWidget(widgetId)
 
 def createNumericCard(sensorName):
     card, valueLabel = buildNumericCard(sensorName)
@@ -454,12 +473,19 @@ def createNumericCard(sensorName):
         
     card.customContextMenuRequested.connect(showCardMenu)
 
-    index = len(numericCards)
+    widgetId = f"numeric:{sensorName}"
 
-    row = index // 3
-    column = index % 3
+    container = DashboardWidget(
+        widgetId,
+        sensorName.replace("_"," ").title(),
+        card
+    )
 
-    numericCardLayout.addWidget(card, row, column)
+    dashboardWorkspace.registerWidget(
+        "numeric",
+        sensorName,
+        container
+    )
 
     numericCards[sensorName] = {
         "card": card,
@@ -483,12 +509,19 @@ def createGauge(sensorName):
         
     card.customContextMenuRequested.connect(showGaugeMenu)
 
-    index = len(gaugeWidgets)
+    widgetId = f"gauge:{sensorName}"
 
-    row = index // 3
-    column = index % 3
+    container = DashboardWidget(
+        widgetId,
+        sensorName.replace("_", " ").title(),
+        card
+    )
 
-    gaugeLayout.addWidget(card, row, column)
+    dashboardWorkspace.registerWidget(
+        "gauge",
+        sensorName,
+        container
+    )
 
     gaugeWidgets[sensorName] ={
         "card": card,
@@ -500,18 +533,82 @@ def removeGauge(sensorName):
     if sensorName not in gaugeWidgets:
         return
     
-    gaugeInfo = gaugeWidgets.pop(sensorName)
-    card = gaugeInfo["card"]
+    gaugeWidgets.pop(sensorName)
 
-    gaugeLayout.removeWidget(card)
-    card.hide()
-    card.deleteLater()
+    widgetId = f"gauge:{sensorName}"
 
-    for index, gaugeInfo in enumerate(gaugeWidgets.values()):
-        row = index // 3
-        column = index % 3
+    dashboardWorkspace.unregisterWidget(widgetId)
 
-        gaugeLayout.addWidget(gaugeInfo["card"], row, column)
+def clearDashboardLayout():
+    if not dashboardWorkspace.editMode:
+        return False
+
+    for sensorName in list(numericCards.keys()):
+        removeNumericCard(sensorName)
+    
+    for sensorName in list(dynamicGraphs.keys()):
+        removeLineGraph(sensorName)
+
+    for sensorName in list(gaugeWidgets.keys()):
+        removeGauge(sensorName)
+
+    return True
+
+def restoreDashboardLayout(configuration):
+    if not dashboardWorkspace.editMode:
+        return False
+
+    clearDashboardLayout()
+
+    for widgetInfo in configuration["widgets"]:
+        widgetId = widgetInfo["id"]
+        widgetType = widgetInfo["type"]
+        sensorName = widgetInfo["sensor"]
+        rowSpan = widgetInfo["rowSpan"]
+        columnSpan = widgetInfo["columnSpan"]
+
+        if widgetType == "numeric":
+            createNumericCard(sensorName)
+
+        elif widgetType == "gauge":
+            createGauge(sensorName)
+
+        elif widgetType == "graph":
+            graph = createSensorGraph(sensorName)
+
+            container = DashboardWidget(
+                widgetId,
+                sensorName.replace("_", " ").title(),
+                graph
+            )
+
+            dashboardWorkspace.registerWidget("graph", sensorName, container)
+        
+        dashboardWorkspace.resizeWidget(
+            widgetId, rowSpan, columnSpan
+        )
+
+        if sensorName in sensorHistories:
+            history = sensorHistories[sensorName]
+
+            if history["values"]:
+                latestValue = history["values"][-1]
+
+                if widgetType == "numeric":
+                    numericCards[sensorName]["valueLabel"].setText(
+                        f"{latestvalue:.2f}"
+                    )
+
+                elif widgetType == "gauge":
+                    updateGauge(sensorName, latestValue)
+
+                elif widgetType == "graph":
+                    dynamicGraphs[sensorName]["curve"].setData(
+                        history["times"],
+                        history["values"]
+                    )
+    
+    return True
 
 def updateGauge(sensorName, value):
     if sensorName not in gaugeWidgets:
@@ -537,26 +634,19 @@ def resetDashboardValues():
 
         gauge = gaugeInfo["gauge"]
         gauge.reset()
-    
-resetDashboardValues()
 
 def removeNumericCard(sensorName):
+    if not dashboardWorkspace.editMode:
+        return 
+
     if sensorName not in numericCards:
         return
-    
-    cardInfo = numericCards.pop(sensorName)
-    card = cardInfo["card"]
 
-    numericCardLayout.removeWidget(card)
-    card.deleteLater()
+    numericCards.pop(sensorName)
 
-    for index, cardInfo in enumerate(numericCards.values()):
-        row = index // 3
-        column = index % 3
+    widgetId = f"numeric:{sensorName}"
 
-        numericCardLayout.addWidget(
-            cardInfo["card"], row, column
-        )
+    dashboardWorkspace.unregisterWidget(widgetId)
 
 def showSensorManager():
     menu = QMenu(window)
@@ -573,10 +663,16 @@ def showSensorManager():
         )
 
         action.setCheckable(True)
-        action.setChecked(graph.isVisible())
+        action.setChecked(
+            not dashboardWorkspace.getWidget(
+                f"graph:{sensorname}"
+            )["widget".isHidden]
+        )
 
         action.triggered.connect(
-            lambda checked, g = graph: g.setVisible(checked)
+            lambda checked, w = dashboardWorkspace.getWidget(
+                f"graph:{sensorName}"
+            )["widget"]: w.setVisible(checked)
         )
 
     menu.exec(
@@ -650,7 +746,20 @@ def addLineGraph():
 
     if accepted and sensorName:
         graph = createSensorGraph(sensorName)
-        dynamicGraphLayout.addWidget(graph)
+
+        widgetId = f"graph:{sensorName}"
+
+        container = DashboardWidget(
+            widgetId,
+            sensorName.replace("_", " ").title(),
+            graph
+        )
+
+        dashboardWorkspace.registerWidget(
+            "graph",
+            sensorName,
+            container
+        )
 
         history = sensorHistories[sensorName]
 
@@ -686,9 +795,9 @@ def addGauge():
     if accepted and sensorName:
         createGauge(sensorName)
 
-        history = sensorHistories[sensorName]
+        history = sensorHistories.get(sensorName)
 
-        if history["values"]:
+        if history and history["values"]:
             updateGauge(sensorName, history["values"][-1])
 
 def showAddWidgetMenu():
@@ -712,6 +821,116 @@ def showAddWidgetMenu():
         )
     )
 
+def saveDashboardLayout():
+    filePath, _ = QFileDialog.getSaveFileName(
+        window,
+        "Save Dashboard Layout",
+        "dashboard.json",
+        "JSON Files (*.json)"
+    )
+
+    if not filePath:
+        return
+    
+    if not filePath.lower().endswith(".json"):
+        filePath += ".json"
+
+    try:
+        configuration = dashboardWorkspace.exportConfiguration()
+
+        saveConfiguration(filePath, configuration)
+
+        QMessageBoxx.information(
+            window,
+            "Layout Saved",
+            "Dashboard layout saved successfully"
+        )
+    
+    except OSError as error:
+        QMessageBox.critical(
+            window,
+            "Save Failed",
+            str(error)
+        )
+    
+saveLayoutButton.clicked.connect(saveDashboardLayout)
+
+def loadDashboardLayout():
+    if not dashboardWorkspace.editMode:
+        return
+
+    filePath, _ = QFileDialog.getOpenFileName(
+        window,
+        "Load Dashboard Layout",
+        "",
+        "JSON Files (*.json)"
+    )
+
+    if not filePath:
+        return
+
+    try:
+        configuration = loadConfiguration(filePath)
+
+        confirmation = QMessageBox.question(
+            window,
+            "Load Layout",
+            "Replace the current dashboard layout"
+        )
+
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+        
+        if restoreDashboardLayout(configuration):
+            QMessageBox.information(
+                window,
+                "Layout Loaded",
+                "Dashboard layout loaded successfully"
+            )
+    
+    except (OSError, ValueError) as error:
+        QMessageBox.critical(
+            window,
+            "Load Failed",
+            str(error)
+        )
+
+loadLayoutButton.clicked.connect(loadDashboardLayout)
+
+def resetDashboardLayout():
+    if not dashboardWorkspace.question:
+        return
+
+    confirmation = QMessageBox.question(
+        window,
+        "Reset Dashboard Layout",
+        "Remove all customizable dashboard widgets?"
+    )
+
+    if confirmation  != QMessageBox.StandardButton.Yes:
+        return
+    
+    clearDashboardLayout()
+
+resetLayoutButton.clicked.connect(resetDashboardLayout)
+
+def toggleEditMode():
+    enabled = not dashboardWorkspace.editMode
+
+    dashboardWorkspace.setEditMode(enabled)
+
+    if enabled:
+        editLayoutButton.setText("Lock Layout")
+    else:
+        editLayoutButton.setText("Edit Layout")
+
+    addWidgetButton.setEnabled(enabled)
+    sensorManagerButton.setEnabled(enabled)
+    loadLayoutButton.setEnabled(enabled)
+    resetLayoutButton.setEnabled(enabled)
+    
+editLayoutButton.clicked.connect(toggleEditMode)
+
 addWidgetButton.clicked.connect(showAddWidgetMenu)
 
 telemetryRecords = []
@@ -726,6 +945,7 @@ connectionLayout.addWidget(refreshButton)
 connectionLayout.addWidget(connectButton)
 
 actionLayout = QHBoxLayout()
+dashboardActionLayout = QHBoxLayout()
 
 actionLayout.addWidget(simulationButton)
 actionLayout.addWidget(clearButton)
@@ -735,8 +955,12 @@ actionLayout.addWidget(resetGraphsButton)
 actionLayout.addWidget(pauseGraphsButton)
 actionLayout.addWidget(exportCsvButton)
 actionLayout.addWidget(clearRecordsButton)
-actionLayout.addWidget(sensorManagerButton)
-actionLayout.addWidget(addWidgetButton)
+dashboardActionLayout.addWidget(sensorManagerButton)
+dashboardActionLayout.addWidget(addWidgetButton)
+dashboardActionLayout.addWidget(editLayoutButton)
+dashboardActionLayout.addWidget(saveLayoutButton)
+dashboardActionLayout.addWidget(loadLayoutButton)
+dashboardActionLayout.addWidget(resetLayoutButton)
 actionLayout.addStretch()
 
 commandLayout = QHBoxLayout()
@@ -746,6 +970,7 @@ commandLayout.addWidget(sendButton)
 
 layout.addLayout(connectionLayout)
 layout.addLayout(actionLayout)
+layout.addLayout(dashboardActionLayout)
 layout.addWidget(statusLabel)
 layout.addWidget(statsLabel)
 layout.addLayout(commandLayout)
@@ -764,14 +989,10 @@ graphLayout.addWidget(humidityGraph)
 temperatureGraph.setMinimumHeight(200)
 humidityGraph.setMinimumHeight(200)
 
-dynamicGraphLayout = QVBoxLayout()
-numericCardLayout = QGridLayout()
-gaugeLayout = QGridLayout()
+dashboardWorkspace = DashboardWorkspace()
 
 graphContainerLayout.addLayout(graphLayout)
-graphContainerLayout.addLayout(dynamicGraphLayout)
-graphContainerLayout.addLayout(numericCardLayout)
-graphContainerLayout.addLayout(gaugeLayout)
+graphContainerLayout.addWidget(dashboardWorkspace)
 
 graphContainer.setLayout(graphContainerLayout)
 
