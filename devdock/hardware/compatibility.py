@@ -106,3 +106,34 @@ def summarizeComponentCompatibility(
         "matchedConnections": matchedConnections,
         "warnings": warnings
     }
+
+def recommendComponentPins(
+    board: BoardDefinition,
+    component: ComponentDefinition
+) -> dict[str, str] | None:
+
+    assignments = {}
+    usedPins = set()
+
+    for connection in component.pins:
+        if connection.requiredCapability in ("power", "ground", "none"):
+            continue
+
+        candidates = findPinsForComponentConnection(
+            board, connection
+        )
+
+        selectedPin = None
+
+        for pin in candidates:
+            if pin.pinId not in usedPins:
+                selectedPin = pin
+                break
+
+        if selectedPin is None:
+            return None
+
+        assignments[connection.pinId] = selectedPin.name
+        usedPins.add(selectedPin.pinId)
+
+    return assignments

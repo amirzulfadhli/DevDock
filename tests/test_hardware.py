@@ -2,7 +2,7 @@ import unittest
 
 from devdock.hardware.boards import ESP32_DEVKIT_V1
 from devdock.hardware.components import HC_SR04, DHT22, getAvailableComponents, validateComponentDatabase
-from devdock.hardware.compatibility import pinSupportsCapability, pinSupportsDirection, findPinsForComponentConnection, summarizeComponentCompatibility
+from devdock.hardware.compatibility import pinSupportsCapability, pinSupportsDirection, findPinsForComponentConnection, summarizeComponentCompatibility, recommendComponentPins
 
 class TestHardware(unittest.TestCase):
 
@@ -68,6 +68,51 @@ class TestHardware(unittest.TestCase):
         self.assertEqual(summary["signalConnections"], 2)
         self.assertEqual(summary["matchedConnections"], 2)
         self.assertEqual(len(summary["warnings"]), 1)
+
+    def test_recommended_pins_are_unique(self):
+        assignments = recommendComponentPins(
+            ESP32_DEVKIT_V1, HC_SR04
+        )
+
+        self.assertIsNotNone(assignments)
+        self.assertEqual(len(assignments), 2)
+
+        assignedPins = list(assignments.values())
+
+        self.assertEqual(
+            len(assignedPins),
+            len(set(assignedPins))
+        )
+    
+    def test_recommended_pins_support_connections(self):
+        assignments = recommendComponentPins(
+            ESP32_DEVKIT_V1, HC_SR04
+        )
+
+        self.assertIsNotNone(assignments)
+
+        for connection in HC_SR04.pins:
+            if connection.requiredCapability in ("power", "ground", "none"):
+                continue
+
+            assignedName = assignments[connection.pinId]
+
+            pin = next(
+                p for p in ESP32_DEVKIT_V1.pins
+                if p.name == assignedName
+            )
+
+            self.assertTrue(
+                pinSupportsCapability(
+                    pin, connection.requiredCapability
+                )
+            )
+
+            self.assertTrue(
+                pinSupportsDirection(
+                    pin, connection.direction
+                )
+            )
 
 if __name__ == "__main__":
     unittest.main()
