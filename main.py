@@ -5,7 +5,7 @@ import serial
 import time
 import csv
 import pyqtgraph as pg
-from PySide6.QtWidgets import QApplication, QMainWindow, QLabel, QComboBox, QPushButton, QWidget, QVBoxLayout, QTextEdit, QHBoxLayout, QGridLayout, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QMenu, QInputDialog, QProgressBar
+from PySide6.QtWidgets import QApplication, QMainWindow, QLabel, QComboBox, QPushButton, QWidget, QVBoxLayout, QTextEdit, QHBoxLayout, QGridLayout, QLineEdit, QFileDialog, QMessageBox, QScrollArea, QMenu, QInputDialog, QProgressBar, QFormLayout, QDialog, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView
 from PySide6.QtCore import Qt, QTimer, QPoint
 from datetime import datetime
 from serial.tools import list_ports
@@ -17,6 +17,9 @@ from devdock.serial_manager import openSerialConnection, readAvailableLines, sen
 from devdock.workspace import DashboardWorkspace
 from devdock.widget_container import DashboardWidget
 from devdock.configuration import saveConfiguration, loadConfiguration
+from devdock.hardware.boards import getAvailableBoards, getBoard
+from devdock.hardware.components import getAvailableComponents, getComponent
+from devdock.hardware.compatibility import findPinsForComponentConnection, getElectricalWarnings, summarizeComponentCompatibility
 
 app = QApplication(sys.argv)
 
@@ -45,6 +48,7 @@ editLayoutButton = QPushButton("Lock Layout")
 saveLayoutButton = QPushButton("Save Layout")
 loadLayoutButton = QPushButton("Load Layout")
 resetLayoutButton = QPushButton("Reset Layout")
+boardInfoButton = QPushButton("Board Info")
 
 graphsPaused = False
 
@@ -928,8 +932,356 @@ def toggleEditMode():
     sensorManagerButton.setEnabled(enabled)
     loadLayoutButton.setEnabled(enabled)
     resetLayoutButton.setEnabled(enabled)
+
+boardSelector = QComboBox()
+
+boardSelector.addItem("Select a board", None)
+
+for board in getAvailableBoards():
+    boardSelector.addItem(board.name, board.boardId)
+
+def handleBoardSelection():
+    boardId = boardSelector.currentData()
+
+    boardInfoButton.setEnabled(False)
+
+    if boardId is None:
+        print("No board selected")
+        return
+
+    board = getBoard(boardId)
+
+    if board is None:
+        print("Board not found")
+        return
+
+    boardInfoButton.setEnabled(True)
+
+    print(f"Selected board: {board.name}")
+    print(f"Microcontroller: {board.microcontroller}")
+    print(f"Logic voltage: {board.logicVoltage}V")
+    print(f"Pin entries: {len(board.pins)}")
+
+boardSelector.currentIndexChanged.connect(handleBoardSelection)
     
 editLayoutButton.clicked.connect(toggleEditMode)
+
+def showBoardInfo():
+    boardId = boardSelector.currentData()
+    board = getBoard(boardId)
+
+    if board is None:
+        return
+
+    dialog = QDialog(window)
+    dialog.setWindowTitle("Board Specifications")
+    dialog.setMinimumHeight(400)
+    dialog.resize(750, 550)
+
+    dialogLayout = QVBoxLayout(dialog)
+    formLayout = QFormLayout()
+
+    formLayout.addRow("Board:", QLabel(board.name))
+    formLayout.addRow("Board ID:", QLabel(board.boardId))
+    formLayout.addRow("Manufacturer:", QLabel(board.manufacturer))
+    formLayout.addRow("Mincrocontroller:", QLabel(board.microcontroller))
+    formLayout.addRow("Architecture:", QLabel(board.architecture))
+    formLayout.addRow("Logic Voltage:", QLabel(f"{board.logicVoltage} V"))
+    formLayout.addRow("Catalogued Pins:", QLabel(str(len(board.pins))))
+
+    featuresLabel = QLabel(", ".join(board.features))
+    featuresLabel.setWordWrap(True)
+
+    formLayout.addRow("Features:", featuresLabel)
+
+    dialogLayout.addLayout(formLayout)
+
+    capabilityFilter = QComboBox()
+
+    capabilityFilter.addItem("All pins", "all")
+
+    for capability in [
+        "digital", "adc", "dac", "pwm", "i2c", "spi", "uart", "power", "ground"
+    ]:
+
+        capabilityFilter.addItem(
+            capability.upper(),
+            capability
+        )
+    
+    dialogLayout.addWidget(QLabel("Filet by capability:"))
+    dialogLayout.addWidget(capabilityFilter)
+
+    pinTable = QTableWidget()
+
+    pinTable.setColumnCount(3)
+    pinTable.setHorizontalHeaderLabels([
+        "Pin",
+        "Capabilities",
+        "Restriction"
+    ])
+
+    pinTable.setRowCount(len(board.pins))
+
+    pinTable.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+    for row, pin in enumerate(board.pins):
+        pinTable.setItem(row, 0, QTableWidgetItem(pin.name))
+
+        pinTable.setItem(row, 1, QTableWidgetItem(", ".join(pin.capabilities)))
+
+        if pin.reserved:
+            restriction = "Reserved"
+        elif pin.inputOnly:
+            restriction = "Input only"
+        else:
+            restriction = "None"
+
+        pinTable.setItem(row, 2, QTableWidgetItem(restriction))
+
+    def filterPins():
+        selectedCapability = capabilityFilter.currentData()
+
+        for row, pin in enumerate(board.pins):
+            matches = (
+                selectedCapability == "all"
+                or selectedCapability in pin.capabilities
+            )
+
+            pinTable.setRowHidden(row, not matches)
+    
+    def showPinDetails():
+        row = pinTable.currentRow()
+
+        if row < 0:
+            pinDetailsLabel.setText("select a pin to view details")
+            return
+        
+        pin = board.pins[row]
+
+        gpioNumber = (
+            str(pin.gpioNumber)
+            if pin.gpioNumber is not None
+            else "N/A"
+        )
+
+        restriction = (
+            "Reserved" if pin.reserved
+            else "Input only" if pin.inputOnly
+            else "None recorded"
+        )
+
+        details = (
+            f"Pin : {pin.name}\n"
+            f"GPIO Number: {gpioNumber}\n"
+            f"Capabilities: {', '.join(pin.capabilities)}\n"
+            f"Resstriction: {restriction}\n"
+            f"Notes: {pin.notes or 'No additional notes'}"
+        )
+
+        pinDetailsLabel.setText(details)
+
+    pinTable.itemSelectionChanged.connect(showPinDetails)
+
+    capabilityFilter.currentIndexChanged.connect(filterPins)
+
+    pinTable.horizontalHeader().setStretchLastSection(True)
+
+    dialogLayout.addWidget(QLabel("Pin Capabilities"))
+    dialogLayout.addWidget(pinTable)
+
+    pinDetailsLabel = QLabel("Select a pin to view details")
+    pinDetailsLabel.setWordWrap(True)
+
+    dialogLayout.addWidget(pinDetailsLabel)
+
+    closeButton = QPushButton("close")
+    closeButton.clicked.connect(dialog.accept)
+
+    dialogLayout.addWidget(closeButton)
+
+    dialog.exec()
+
+boardInfoButton.clicked.connect(showBoardInfo)
+
+def showComponentInfo():
+    componentId = componentSelector.currentData()
+
+    if componentId is None:
+        return
+
+    component =getComponent(componentId)
+
+    if component is None:
+        return
+
+    dialog = QDialog(window)
+    dialog.setWindowTitle("Component Specifications")
+    dialog.resize(650, 450)
+
+    dialogLayout = QVBoxLayout(dialog)
+    formLayout = QFormLayout()
+
+    formLayout.addRow(
+        "Component:", QLabel(component.name)
+    )
+    formLayout.addRow(
+        "Component ID:", QLabel(component.componentId)
+    )
+    formLayout.addRow(
+        "Manufacturer:", QLabel(component.manufacturer)
+    )
+    formLayout.addRow(
+        "Category:", QLabel(component.category)
+    )
+    formLayout.addRow(
+        "Operating voltage:", QLabel(component.operatingVoltage)
+    )
+    formLayout.addRow(
+        "Protocol:", QLabel(component.communicationProtocol)
+    )
+    formLayout.addRow(
+        "Connections:", QLabel(str(len(component.pins)))
+    )
+
+    descriptionLabel = QLabel(component.description)
+    descriptionLabel.setWordWrap(True)
+
+    formLayout.addRow("Desciption", descriptionLabel)
+
+    dialogLayout.addLayout(formLayout)
+
+    boardId = boardSelector.currentData()
+    selectedBoard = getBoard(boardId) if boardId is not None else None
+
+    summaryLabel = QLabel()
+    summaryLabel.setWordWrap(True)
+
+    if selectedBoard is None:
+        summaryLabel.setText(
+            "Compatiblity summary: Select a board first"
+        )
+    else:
+        summary = summarizeComponentCompatibility(
+            selectedBoard, component
+        )
+
+        summaryLabel.setText(
+            f"Logical signal matches:"
+            f"{summary['matchedConnections']}/"
+            f"{summary['signalConnections']}\n"
+            f"Known electrical warnings: {len(summary['warnings'])}\n"
+            "Not a verified wiring or electrical safety assessment"
+        )
+
+    dialogLayout.addWidget(summaryLabel)
+
+    connectionTable = QTableWidget()
+    connectionTable.setColumnCount(4)
+
+    connectionTable.setHorizontalHeaderLabels([
+        "Pin",
+        "Function",
+        "Capability",
+        "Direction"
+    ])
+
+    connectionTable.setRowCount(len(component.pins))
+
+    for row, pin in enumerate(component.pins):
+        connectionTable.setItem(
+            row, 0, QTableWidgetItem(pin.name)
+        )
+        connectionTable.setItem(
+            row, 1, QTableWidgetItem(pin.function)
+        )
+        connectionTable.setItem(
+            row, 2, QTableWidgetItem(pin.requiredCapability)
+        )
+        connectionTable.setItem(
+            row, 3, QTableWidgetItem(pin.direction)
+        )
+    
+    connectionTable.horizontalHeader().setStretchLastSection(True)
+
+    connectionTable.horizontalHeader().setSectionResizeMode(
+        QHeaderView.ResizeMode.Stretch
+    )
+    
+    connectionTable.setEditTriggers(
+        QTableWidget.EditTrigger.NoEditTriggers
+    )
+
+    connectionDetails = QLabel("Sekect a connection to view details")
+    connectionDetails.setWordWrap(True)
+
+    def showConnectionDetails(row, column):
+        pin = component.pins[row]
+
+        connectionDetails.setText(
+            f"Pin: {pin.name}\n"
+            f"Function: {pin.function}\n"
+            f"Capability: {pin.requiredCapability}\n"
+            f"Direction: {pin.direction}\n"
+            f"Notes: {pin.notes or 'No additional notes'}"
+        )
+
+        boardId = boardSelector.currentData()
+        board = getBoard(boardId) if boardId is not None else None
+
+        electricalWarningLabel.clear()
+
+        if board is not None:
+            warnings = getElectricalWarnings(board, component, pin)
+
+            if warnings:
+                electricalWarningLabel.setText("\n".join(warnings))
+
+        if board is None:
+            candidatePinsLabel.setText("Candidate board pins: Select a board first")
+            return
+
+        if pin.requiredCapability in ("poert", "grounf", "none"):
+            candidatePinsLabel.setText(
+                "Candidate board pins: Power, ground and NC connections "
+                "are not handled by GPIO matching"
+            )
+            return
+        
+        candidates = findPinsForComponentConnection(board, pin)
+
+        if candidates:
+            pinNames = ", ".join(candidate.name for candidate in candidates)
+            candidatePinsLabel.setText(
+                f"Logical GPIO candidates: {pinNames}\n"
+                "Electrical compatibility has not been verified"
+            )
+        else:
+            candidatePinsLabel.setText("No GPIO candidates found for this connection")
+    
+    connectionTable.cellClicked.connect(showConnectionDetails)
+
+    dialogLayout.addWidget(connectionTable)
+
+    dialogLayout.addWidget(connectionDetails)
+
+    candidatePinsLabel = QLabel("Candidate board pins: Select a connection")
+    candidatePinsLabel.setWordWrap(True)
+
+    dialogLayout.addWidget(candidatePinsLabel)
+
+    electricalWarningLabel = QLabel("")
+    electricalWarningLabel.setWordWrap(True)
+    electricalWarningLabel.setStyleSheet("color: #FFB4AB; font-weight: bold;")
+
+    dialogLayout.addWidget(electricalWarningLabel)
+
+    closeButton = QPushButton("close")
+    closeButton.clicked.connect(dialog.accept)
+
+    dialogLayout.addWidget(closeButton)
+
+    dialog.exec()
 
 addWidgetButton.clicked.connect(showAddWidgetMenu)
 
@@ -945,7 +1297,6 @@ connectionLayout.addWidget(refreshButton)
 connectionLayout.addWidget(connectButton)
 
 actionLayout = QHBoxLayout()
-dashboardActionLayout = QHBoxLayout()
 
 actionLayout.addWidget(simulationButton)
 actionLayout.addWidget(clearButton)
@@ -955,20 +1306,84 @@ actionLayout.addWidget(resetGraphsButton)
 actionLayout.addWidget(pauseGraphsButton)
 actionLayout.addWidget(exportCsvButton)
 actionLayout.addWidget(clearRecordsButton)
+actionLayout.addStretch()
+
+dashboardActionLayout = QHBoxLayout()
+
 dashboardActionLayout.addWidget(sensorManagerButton)
 dashboardActionLayout.addWidget(addWidgetButton)
 dashboardActionLayout.addWidget(editLayoutButton)
 dashboardActionLayout.addWidget(saveLayoutButton)
 dashboardActionLayout.addWidget(loadLayoutButton)
 dashboardActionLayout.addWidget(resetLayoutButton)
-actionLayout.addStretch()
+
+hardwareLayout = QHBoxLayout()
+
+boardLabel = QLabel("Board:")
+
+boardInfoButton.setEnabled(False)
+
+hardwareLayout.addWidget(boardLabel)
+hardwareLayout.addWidget(boardSelector)
+hardwareLayout.addWidget(boardInfoButton)
+hardwareLayout.addStretch()
+
+componentLabel = QLabel("Component:")
+
+componentSelector = QComboBox()
+componentSelector.addItem("Select a component", None)
+
+for component in getAvailableComponents():
+    componentSelector.addItem(
+        component.name,
+        component.componentId
+    )
+
+hardwareLayout.addWidget(componentLabel)
+hardwareLayout.addWidget(componentSelector)
+
+componentInfoButton = QPushButton("Component Info")
+componentInfoButton.setEnabled(False)
+
+hardwareLayout.addWidget(componentInfoButton)
+componentInfoButton.setEnabled(False)
+
+hardwareLayout.addWidget(componentInfoButton)
+
+componentInfoButton.clicked.connect(showComponentInfo)
+
+def handleComponentSelection():
+    componentId = componentSelector.currentData()
+
+    componentInfoButton.setEnabled(False)
+
+    if componentId is None:
+        print("No component selected")
+        return
+
+    component = getComponent(componentId)
+
+    if component is None:
+        print("Unknown component")
+        return
+
+    componentInfoButton.setEnabled(True)
+
+    print("Selected component:", component.name)
+    print("Category:", component.category)
+    print("Protocol:", component.communicationProtocol)
+    print("Connection:", len(component.pins))
+
+componentSelector.currentIndexChanged.connect(handleComponentSelection)
 
 commandLayout = QHBoxLayout()
 
 commandLayout.addWidget(commandInput)
 commandLayout.addWidget(sendButton)
 
+
 layout.addLayout(connectionLayout)
+layout.addLayout(hardwareLayout)
 layout.addLayout(actionLayout)
 layout.addLayout(dashboardActionLayout)
 layout.addWidget(statusLabel)
