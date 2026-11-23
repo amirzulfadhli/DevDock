@@ -1307,6 +1307,140 @@ def showComponentInfo():
         recommendationTable
     )
 
+    copyPinsButton = QPushButton("Copy Pin Mapping")
+
+    def copyPinMapping():
+        if selectedBoard is None:
+            return
+
+        recommendations = recommendComponentPins(
+            selectedBoard,
+            component
+        )
+
+        if not recommendations:
+            return
+
+        lines = [
+            f"Board: {selectedBoard.name}",
+            f"Component: {component.name}",
+            "",
+            "Recommended GPIO assignments:"
+        ]
+
+        for connection in component.pins:
+            if connection.pinId in recommendations:
+                lines.append(
+                    f"{connection.name}: "
+                    f"{recommendations[connection.pinId]}"
+                )
+
+        warnings = []
+
+        for connection in component.pins:
+            warnings.extend(
+                getElectricalWarnings(
+                    selectedBoard,
+                    component,
+                    connection
+                )
+            )
+
+        if warnings:
+            lines.append("")
+            lines.append("KNOWN ELECTRICAL WARNINGS:")
+
+            for warning in dict.fromkeys(warnings):
+                lines.append(warning)
+
+        lines.append("")
+        lines.append(
+            "Note: GPIO recommendations are logical only "
+            "Electrical safety has not been fully verified"
+        )
+
+        QApplication.clipboard().setText(
+            "\n".join(lines)
+        )
+
+        copyPinsButton.setText("copied!")
+
+    copyPinsButton.clicked.connect(copyPinMapping)
+
+    def savePinMapping():
+        if selectedBoard is None:
+            return
+        
+        recommendations = recommendComponentPins(
+            selectedBoard,
+            component
+        )
+
+        if recommendations is None:
+            return
+
+        warnings = summarizeComponentCompatibility(
+            selectedBoard,
+            component
+        )["warnings"]
+
+        exportData = {
+            "board": {
+                "id": selectedBoard.boardId,
+                "name": selectedBoard.name
+            },
+            "component": {
+                "id": component.componentId,
+                "name": component.name
+            },
+            "pinAssignments": recommendations,
+            "electricalWarnings": list(
+                dict.fromkeys(warnings)
+            ),
+            "electricalSafetyVerified": False
+        }
+
+        filePath, _ = QFileDialog.getSaveFileName(
+            dialog,
+            "Save Pin Mapping",
+            f"{component.componentId}_pin_mapping.json",
+            "JSON Files (*.json)"
+        )
+
+        if not filePath:
+            return
+
+        try:
+            with open(filePath, "w", encoding = "utf-8") as file:
+                json.dump(exportData, file, indent = 4)
+
+        except OSError as error:
+            QMessageBox.warning(
+                dialog,
+                "Export Failed",
+                str(error)
+            )
+            return
+        
+        QMessageBox.information(
+            dialog, 
+            "Export Complete",
+            "Pin mapping saved successfully"
+        )
+
+    savePinsButton = QPushButton("Save Pin Mapping")
+    savePinsButton.clicked.connect(savePinMapping)
+
+    savePinsButton.setEnabled(
+        selectedBoard is not None
+    )
+
+    formLayout.addRow("", savePinsButton)
+
+    copyPinsButton.setEnabled(selectedBoard is not None)
+
+    formLayout.addRow("", copyPinsButton)
+
     connectionTable = QTableWidget()
     connectionTable.setColumnCount(4)
 

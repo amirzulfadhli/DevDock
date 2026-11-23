@@ -15,3 +15,5 @@ devdock-logs.txt
 #Exported telemetry
 devdock-telemetry.csv
 
+#DevDock generated pin mapping exports
+*_pin_mapping.json
