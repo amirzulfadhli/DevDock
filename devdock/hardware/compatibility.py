@@ -69,8 +69,8 @@ def getElectricalWarnings(
         and connection.pinId.upper() == "ECHO"
     ):
         warnings.append(
-            "WARNING: HC-SR04 ECHO may output 5V"
-            "ESP32 GPIO uses 3.3V logic"
+            "WARNING: HC-SR04 ECHO may output 5V \n"
+            "ESP32 GPIO uses 3.3V logic \n"
             "Use appropriate level shifting"
         )
     
@@ -112,28 +112,67 @@ def recommendComponentPins(
     component: ComponentDefinition
 ) -> dict[str, str] | None:
 
+    connections = [
+        connection
+        for connection in component.pins
+        if connection.requiredCapability not in (
+            "power", "ground", "none"
+        )
+    ]
+
+    availablePins = set()
+
+    for connection in connections:
+        candidates = findPinsForComponentConnection(
+            board, connection
+        )
+
+        if not candidates:
+            return None
+
+        for pin in candidates:
+            availablePins.add(pin.pinId)
+
+    if len(availablePins) < len(connections):
+        return None
+
+    connections.sort(
+        key = lambda connection: len(
+            findPinsForComponentConnection(
+                board, connection
+            )
+        )
+    )
+
     assignments = {}
     usedPins = set()
 
-    for connection in component.pins:
-        if connection.requiredCapability in ("power", "ground", "none"):
-            continue
+    def assignPin(index: int) -> bool:
+        if index == len(connections):
+            return True
+
+        connection = connections[index]
 
         candidates = findPinsForComponentConnection(
             board, connection
         )
 
-        selectedPin = None
-
         for pin in candidates:
-            if pin.pinId not in usedPins:
-                selectedPin = pin
-                break
+            if pin.pinId in usedPins:
+                continue
 
-        if selectedPin is None:
-            return None
+            assignments[connection.pinId] = pin.name
+            usedPins.add(pin.pinId)
 
-        assignments[connection.pinId] = selectedPin.name
-        usedPins.add(selectedPin.pinId)
+            if assignPin(index + 1):
+                return True
 
-    return assignments
+            usedPins.remove(pin.pinId)
+            del assignments[connection.pinId]
+
+        return False
+    
+    if assignPin(0):
+        return assignments
+    
+    return None

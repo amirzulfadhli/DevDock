@@ -19,7 +19,7 @@ from devdock.widget_container import DashboardWidget
 from devdock.configuration import saveConfiguration, loadConfiguration
 from devdock.hardware.boards import getAvailableBoards, getBoard
 from devdock.hardware.components import getAvailableComponents, getComponent
-from devdock.hardware.compatibility import findPinsForComponentConnection, getElectricalWarnings, summarizeComponentCompatibility
+from devdock.hardware.compatibility import findPinsForComponentConnection, getElectricalWarnings, summarizeComponentCompatibility, recommendComponentPins
 
 app = QApplication(sys.argv)
 
@@ -1117,9 +1117,36 @@ def showComponentInfo():
 
     dialog = QDialog(window)
     dialog.setWindowTitle("Component Specifications")
-    dialog.resize(650, 450)
+    dialog.resize(800, 650)
 
     dialogLayout = QVBoxLayout(dialog)
+
+    scrollArea = QScrollArea()
+    scrollArea.setWidgetResizable(True)
+    scrollArea.setFrameShape(QScrollArea.Shape.NoFrame)
+
+    scrollContent = QWidget()
+    contentLayout = QVBoxLayout(scrollContent)
+
+    scrollArea.setWidget(scrollContent)
+    dialogLayout.addWidget(scrollArea)
+
+    def createSectionHeader(title):
+        header = QLabel(title)
+
+        header.setStyleSheet("""
+            WLabel {
+                color: #8ECDF8;
+                font-size: 15px;
+                font-weight: bold;
+                padding-top: 12px;
+                padding-bottom: 6px;
+                border-bottom: 1px solid #3A4654;
+            }
+        """)
+
+        return header
+
     formLayout = QFormLayout()
 
     formLayout.addRow(
@@ -1149,7 +1176,11 @@ def showComponentInfo():
 
     formLayout.addRow("Desciption", descriptionLabel)
 
-    dialogLayout.addLayout(formLayout)
+    contentLayout.addWidget(
+        createSectionHeader("COMPONENT SPECIFICATIONS")
+    )
+
+    contentLayout.addLayout(formLayout)
 
     boardId = boardSelector.currentData()
     selectedBoard = getBoard(boardId) if boardId is not None else None
@@ -1174,7 +1205,107 @@ def showComponentInfo():
             "Not a verified wiring or electrical safety assessment"
         )
 
-    dialogLayout.addWidget(summaryLabel)
+    contentLayout.addWidget(
+        createSectionHeader("GPIO PIN MAPPING")
+    )
+
+    contentLayout.addWidget(summaryLabel)
+
+    safetySummaryLabel = QLabel()
+    safetySummaryLabel.setWordWrap(True)
+
+    if selectedBoard is not None:
+        summary = summarizeComponentCompatibility(
+            selectedBoard, component
+        )
+
+        if summary["warnings"]:
+            safetySummaryLabel.setText("\n\n".join(summary["warnings"]))
+            safetySummaryLabel.setStyleSheet("""
+                QLabel {
+                    color: #FFB4AB;
+                    background-color: #3A2024;
+                    border: 1px solid #8B454D;
+                    border-radius: 6px;
+                    padding: 10px;
+                    font-weight: boled;
+                }
+            """)
+
+            contentLayout.addWidget(safetySummaryLabel)
+
+    recommendationTable = QTableWidget()
+    recommendationTable.setColumnCount(2)
+
+    recommendationTable.setHorizontalHeaderLabels([
+        "Component Pin",
+        "Recommended GPIO"
+    ])
+
+    recommendationTable.horizontalHeader().setSectionResizeMode(
+        QHeaderView.ResizeMode.Stretch
+    )
+
+    recommendationTable.setEditTriggers(
+        QTableWidget.EditTrigger.NoEditTriggers
+    )
+
+    if selectedBoard is None:
+        recommendationTable.setRowCount(1)
+        recommendationTable.setItem(
+            0, 0, QTableWidgetItem("Select a board first")
+        )
+    else:
+        recommendations = recommendComponentPins(
+            selectedBoard,
+            component
+        )
+
+        if recommendations is None:
+            recommendationTable.setRowCount(1)
+            recommendationTable.setItem(
+                0, 0, QTableWidgetItem("No valid assignment")
+            )
+        elif not recommendations:
+            recommendationTable.setRowCount(1)
+            recommendationTable.setItem(
+                0, 0, QTableWidgetItem("No GPIO signals required")
+            )
+        else:
+            signalConnection = [
+                pin for pin in component.pins
+                if pin.pinId in recommendations
+            ]
+
+            recommendationTable.setRowCount(
+                len(signalConnection)
+            )
+
+            for row, pin in enumerate(signalConnection):
+                recommendationTable.setItem(
+                    row, 0, QTableWidgetItem(pin.name)
+                )
+
+                recommendationTable.setItem(
+                    row, 1,
+                    QTableWidgetItem(
+                        recommendations[pin.pinId]
+                    )
+                )
+
+    recommendationTable.verticalHeader().setVisible(False)
+
+    recommendationTable.setFixedHeight(
+        recommendationTable.horizontalHeader().height()
+        + recommendationTable.verticalHeader().defaultSectionSize()
+        * recommendationTable.rowCount()
+        + 4
+    )
+
+    formLayout.addRow(
+        "Pin Recommendations:",
+        recommendationTable
+    )
 
     connectionTable = QTableWidget()
     connectionTable.setColumnCount(4)
@@ -1187,6 +1318,15 @@ def showComponentInfo():
     ])
 
     connectionTable.setRowCount(len(component.pins))
+
+    connectionTable.verticalHeader().setVisible(False)
+
+    connectionTable.setMinimumHeight(
+        connectionTable.horizontalHeader().height()
+        + connectionTable.verticalHeader().defaultSectionSize()
+        * len(component.pins)
+        + 8
+    )
 
     for row, pin in enumerate(component.pins):
         connectionTable.setItem(
@@ -1230,18 +1370,22 @@ def showComponentInfo():
         board = getBoard(boardId) if boardId is not None else None
 
         electricalWarningLabel.clear()
+        electricalWarningLabel.hide()
 
         if board is not None:
-            warnings = getElectricalWarnings(board, component, pin)
+            warnings = getElectricalWarnings(
+                board, component, pin
+            )
 
             if warnings:
-                electricalWarningLabel.setText("\n".join(warnings))
+                electricalWarningLabel.setText("\n\n".join(warnings))
+                electricalWarningLabel.show()
 
         if board is None:
             candidatePinsLabel.setText("Candidate board pins: Select a board first")
             return
 
-        if pin.requiredCapability in ("poert", "grounf", "none"):
+        if pin.requiredCapability in ("poert", "ground", "none"):
             candidatePinsLabel.setText(
                 "Candidate board pins: Power, ground and NC connections "
                 "are not handled by GPIO matching"
@@ -1261,20 +1405,34 @@ def showComponentInfo():
     
     connectionTable.cellClicked.connect(showConnectionDetails)
 
-    dialogLayout.addWidget(connectionTable)
+    contentLayout.addWidget(connectionTable)
 
-    dialogLayout.addWidget(connectionDetails)
+    contentLayout.addWidget(connectionDetails)
 
     candidatePinsLabel = QLabel("Candidate board pins: Select a connection")
     candidatePinsLabel.setWordWrap(True)
 
-    dialogLayout.addWidget(candidatePinsLabel)
+    contentLayout.addWidget(candidatePinsLabel)
 
     electricalWarningLabel = QLabel("")
     electricalWarningLabel.setWordWrap(True)
-    electricalWarningLabel.setStyleSheet("color: #FFB4AB; font-weight: bold;")
+    electricalWarningLabel.hide()
+    electricalWarningLabel.setStyleSheet("""
+        QLabel {
+            color: #FFB4AB;
+            background-color: #3A2024;
+            border: 1px solid #8B454D;
+            border-radius: 6px;
+            padding: 10px;
+            font-weight: bold;
+        }
+    """)
 
-    dialogLayout.addWidget(electricalWarningLabel)
+    contentLayout.addWidget(
+        createSectionHeader("ELECTRICAL SAFETY")
+    )
+
+    contentLayout.addWidget(electricalWarningLabel)
 
     closeButton = QPushButton("close")
     closeButton.clicked.connect(dialog.accept)

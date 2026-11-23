@@ -114,5 +114,152 @@ class TestHardware(unittest.TestCase):
                 )
             )
 
+    def test_insufficient_gpio_return_none(self):
+        from devdock.hardware.components import (
+            ComponentDefinition,
+            ComponentPinDefinition
+        )
+
+        connections = []
+
+        for i in range(20):
+            connections.append(
+                ComponentPinDefinition(
+                    pinId = f"signal_{i}",
+                    name = f"Signal {i}",
+                    function = "Test signal",
+                    requiredCapability = "digital",
+                    direction = "input"
+                )
+            )
+
+        testComponent = ComponentDefinition(
+            componentId = "gpio_stress_test",
+            name = "GPIO Stress Test",
+            manufacturer = "Test",
+            category = "test",
+            description = "Requires more GPIOs than available",
+            operatingVoltage = "3.3V",
+            communicationProtocol = "GPIO",
+            requiredCapabilities = ["digital"],
+            pins = connections
+        )
+
+        assignments = recommendComponentPins(
+            ESP32_DEVKIT_V1,
+            testComponent
+        )
+
+        self.assertIsNone(assignments)
+
+    def test_backtracking_finds_valid_assignment(self):
+        from dataclasses import replace
+        from devdock.hardware.components import (
+            ComponentDefinition,
+            ComponentPinDefinition
+        )
+
+        limitedBoard = replace(
+            ESP32_DEVKIT_V1,
+            pins = [
+                pin for pin in ESP32_DEVKIT_V1.pins
+                if pin.gpioNumber in (21, 34)
+            ]
+        )
+
+        testComponent = ComponentDefinition(
+            componentId = "backtracking_test",
+            name = "Backtracking Test",
+            manufacturer = "Test",
+            category = "test",
+            description = "Tests GPIO reassignment",
+            operatingVoltage = "3.3V",
+            communicationProtocol = "GPIO",
+            pins = [
+                ComponentPinDefinition(
+                    pinId = "flexible",
+                    name = "Flexible Signal",
+                    function = "Read signal",
+                    requiredCapability = "digital",
+                    direction = "output"
+                ),
+                ComponentPinDefinition(
+                    pinId = "restricted",
+                    name = "Restricted Signal",
+                    function = "Send signal",
+                    requiredCapability = "digital",
+                    direction = "input"
+                )
+            ]
+        )
+
+        assignments = recommendComponentPins(
+            limitedBoard, testComponent
+        )
+
+        self.assertEqual(
+            assignments,
+            {
+                "flexible": "GPIO 34",
+                "restricted": "GPIO 21"
+            }
+        )
+
+    def test_restricted_connection_gets_priority(self):
+        from dataclasses import replace
+        from devdock.hardware.components import (
+            ComponentDefinition,
+            ComponentPinDefinition
+        )
+
+        limitedBoard = replace(
+            ESP32_DEVKIT_V1,
+            pins = [
+                pin for pin in ESP32_DEVKIT_V1.pins
+                if pin.gpioNumber in (21, 22, 34)
+            ]
+        )
+
+        testComponent = ComponentDefinition(
+            componentId = "priority_test",
+            name = "Priotrity Test",
+            manufacturer = "Test",
+            category = "test",
+            description = "Tests restricted connection priority",
+            operatingVoltage = "3.3V",
+            communicationProtocol = "GPIO",
+            pins = [
+                ComponentPinDefinition(
+                    pinId = "flexible",
+                    name = "Flexible Signal",
+                    function = "Read signal",
+                    requiredCapability = "digital",
+                    direction = "output"
+                ),
+                ComponentPinDefinition(
+                    pinId = "restricted",
+                    name = "Restricted Signal",
+                    function = "Send signal",
+                    requiredCapability = "digital",
+                    direction = "input"
+                )
+            ]
+        )
+
+        assignments = recommendComponentPins(
+            limitedBoard, testComponent
+        )
+
+        self.assertIsNotNone(assignments)
+        self.assertIn(
+            assignments["restricted"],
+            ("GPIO 21", "GPIO 22")
+        )
+        self.assertNotEqual(
+            assignments["flexible"],
+            assignments["restricted"]
+        )
+
 if __name__ == "__main__":
+
     unittest.main()
